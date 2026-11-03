@@ -13,7 +13,7 @@
    ③ GitHub Pages
       저장소에 파일을 올리고 Settings → Pages 를 켜면 https 주소가 생깁니다.
 
-   ※ 폴더 구조를 바꾸지 마세요. index.html, manifest.webmanifest, sw.js, icons 폴더가 같은 곳에 있어야 합니다.
+   ※ 모든 파일을 같은 곳(맨 위)에 함께 올려야 합니다. 폴더는 없습니다.
 
 2. 안드로이드 패드에 설치
    - Chrome으로 그 주소를 엽니다.

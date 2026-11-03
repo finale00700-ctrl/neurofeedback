@@ -9,8 +9,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="description" content="BLE 뇌파 기기 신호로 음악과 화면을 실시간 조절하는 뉴로피드백 훈련 앱">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" href="icons/icon-192.png">
-<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <title>브레인업 뉴로피드백</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -256,6 +256,7 @@ code{font-family:var(--mono);font-size:12px;background:var(--ink);border:1px sol
           <select id="profile">
             <option value="nus">Nordic UART (ESP32·nRF 등)</option>
             <option value="hm10">HM-10 / CC2541 시리얼 (FFE0)</option>
+            <option value="panaxtos">파낙토스 뉴로하모니 S20·S26 (FFC0·FFF0)</option>
             <option value="custom">직접 입력 (UUID)</option>
           </select>
         </label>
@@ -264,6 +265,7 @@ code{font-family:var(--mono);font-size:12px;background:var(--ink);border:1px sol
             <option value="text">텍스트 줄 (자동 인식)</option>
             <option value="int16">원시 신호 · int16 LE</option>
             <option value="float32">원시 신호 · float32 LE</option>
+            <option value="hex">분석 · 받은 데이터 그대로 기록 (HEX)</option>
           </select>
         </label>
       </div>
@@ -281,7 +283,10 @@ code{font-family:var(--mono);font-size:12px;background:var(--ink);border:1px sol
     </div>
 
     <div class="panel">
-      <h2>수신 데이터 로그</h2>
+      <div class="row" style="justify-content:space-between">
+        <h2>수신 데이터 로그</h2>
+        <button id="btnCopyLog" class="btn">로그 전체 복사</button>
+      </div>
       <div class="log" id="log" aria-live="polite"></div>
       <h2 style="margin-top:4px">인식하는 데이터 형식</h2>
       <ul class="formats">
@@ -458,8 +463,32 @@ const scaleVal = () => +$('scale').value || 1;
 
 let textBuf = '';
 const decoder = new TextDecoder();
-function onBytes(bytes) {
+// 분석 모드: 특성별 패킷 수·길이를 세고 원본 바이트를 16진수로 기록
+const HEXSTAT = {};
+let hexLogBudget = 0;
+setInterval(() => { hexLogBudget = 6; }, 1000);
+setInterval(() => {
+  if ($('format').value !== 'hex') return;
+  const keys = Object.keys(HEXSTAT);
+  if (!keys.length) return;
+  keys.forEach(k => {
+    const s = HEXSTAT[k];
+    if (!s.n) return;
+    log(`[통계 ${k}] 2초 동안 ${s.n}개 패킷 · 초당 ${(s.n / 2).toFixed(1)}개 · 길이 ${[...s.lens].join('/')}바이트`, 'ok');
+    s.n = 0; s.lens.clear();
+  });
+}, 2000);
+const toHex = b => Array.from(b, x => x.toString(16).padStart(2, '0')).join(' ');
+function onBytes(bytes, tag) {
   const fmt = $('format').value;
+  if (fmt === 'hex') {
+    const k = tag || 'rx';
+    const s = HEXSTAT[k] || (HEXSTAT[k] = { n:0, lens:new Set() });
+    s.n++; s.lens.add(bytes.length);
+    S.lastData = performance.now();
+    if (hexLogBudget > 0) { hexLogBudget--; log(`← ${k} [${bytes.length}] ${toHex(bytes)}`); }
+    return;
+  }
   if (fmt === 'text') {
     textBuf += decoder.decode(bytes, { stream:true });
     const parts = textBuf.split(/\r?\n/);
@@ -477,7 +506,10 @@ function onBytes(bytes) {
 const PROFILES = {
   nus:  { svc:'6e400001-b5a3-f393-e0a9-e50e24dcca9e', rx:'6e400003-b5a3-f393-e0a9-e50e24dcca9e', tx:'6e400002-b5a3-f393-e0a9-e50e24dcca9e' },
   hm10: { svc:0xffe0, rx:0xffe1, tx:0xffe1 },
+  // 파낙토스: 특성 번호가 공개되지 않아 두 서비스의 알림 특성을 모두 자동으로 구독
+  panaxtos: { svcs:[0xffc0, 0xfff0], auto:true },
 };
+const short = u => { const m = /^0000([0-9a-f]{4})-0000-1000-8000-00805f9b34fb$/i.exec(u); return m ? m[1].toUpperCase() : u; };
 const normUuid = s => { s = (s || '').trim().toLowerCase(); if (/^0x[0-9a-f]{4}$/.test(s)) return parseInt(s, 16); if (/^[0-9a-f]{4}$/.test(s)) return parseInt(s, 16); return s; };
 const BT = { device:null, rx:null, tx:null, manual:false, retries:0 };
 
@@ -501,10 +533,11 @@ async function connect() {
   const prob = btProblem();
   if (prob && !('bluetooth' in navigator && window.isSecureContext)) { showNotice(prob); return; }
   const p = profileNow();
-  if (!p.svc || !p.rx) { showNotice('직접 입력 프로필은 서비스 UUID와 수신 UUID가 필요합니다.'); return; }
+  if (!p.auto && (!p.svc || !p.rx)) { showNotice('직접 입력 프로필은 서비스 UUID와 수신 UUID가 필요합니다.'); return; }
   try {
     BT.manual = false;
-    const optional = [PROFILES.nus.svc, PROFILES.hm10.svc, p.svc];
+    const optional = [PROFILES.nus.svc, PROFILES.hm10.svc, 0xffc0, 0xfff0, 0x180a, 0x180f];
+    if (p.svc) optional.push(p.svc);
     BT.device = await navigator.bluetooth.requestDevice({ acceptAllDevices:true, optionalServices:optional });
     BT.device.addEventListener('gattserverdisconnected', onDisconnected);
     await openGatt();
@@ -518,15 +551,38 @@ async function openGatt() {
   setConn('', '연결 중…');
   log(`${BT.device.name || '이름 없는 기기'}에 연결 중`);
   const server = await BT.device.gatt.connect();
-  const svc = await server.getPrimaryService(p.svc);
-  BT.rx = await svc.getCharacteristic(p.rx);
   BT.tx = null;
-  if (p.tx) { try { BT.tx = await svc.getCharacteristic(p.tx); } catch { log('송신 특성을 찾지 못해 수신만 합니다.'); } }
-  BT.rx.addEventListener('characteristicvaluechanged', ev => {
-    const v = ev.target.value;
-    onBytes(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
-  });
-  await BT.rx.startNotifications();
+  if (p.auto) {
+    // 서비스 안의 특성을 모두 찾아 기록하고, 알림이 되는 특성은 전부 구독
+    let subscribed = 0;
+    for (const sid of p.svcs) {
+      let svc;
+      try { svc = await server.getPrimaryService(sid); } catch { log(`서비스 ${sid.toString(16).toUpperCase()} 없음`); continue; }
+      const chars = await svc.getCharacteristics();
+      for (const c of chars) {
+        const pr = c.properties, props = ['read', 'write', 'writeWithoutResponse', 'notify', 'indicate'].filter(x => pr[x]);
+        log(`서비스 ${sid.toString(16).toUpperCase()} · 특성 ${short(c.uuid)} · ${props.join(', ')}`, 'ok');
+        if ((pr.write || pr.writeWithoutResponse) && !BT.tx) BT.tx = c;
+        if (pr.read) { try { const v = await c.readValue(); log(`  읽은 값 ${short(c.uuid)}: ${toHex(new Uint8Array(v.buffer))}`); } catch { /* 읽기 거부 */ } }
+        if (pr.notify || pr.indicate) {
+          const tag = short(c.uuid);
+          c.addEventListener('characteristicvaluechanged', ev => { const v = ev.target.value; onBytes(new Uint8Array(v.buffer, v.byteOffset, v.byteLength), tag); });
+          try { await c.startNotifications(); subscribed++; if (!BT.rx) BT.rx = c; } catch (e) { log(`  ${tag} 알림 켜기 실패: ${e.message}`, 'er'); }
+        }
+      }
+    }
+    if (!subscribed) throw new Error('알림을 보내는 특성을 찾지 못했습니다');
+    if ($('format').value !== 'hex') { $('format').value = 'hex'; log('형식을 ‘분석 (HEX)’으로 바꿨습니다. 이 기기의 데이터 형식을 확인하는 단계입니다.'); }
+  } else {
+    const svc = await server.getPrimaryService(p.svc);
+    BT.rx = await svc.getCharacteristic(p.rx);
+    if (p.tx) { try { BT.tx = await svc.getCharacteristic(p.tx); } catch { log('송신 특성을 찾지 못해 수신만 합니다.'); } }
+    BT.rx.addEventListener('characteristicvaluechanged', ev => {
+      const v = ev.target.value;
+      onBytes(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
+    });
+    await BT.rx.startNotifications();
+  }
   BT.retries = 0;
   setFs($('fs').value); textBuf = '';
   setDemo(false);
@@ -539,11 +595,14 @@ async function openGatt() {
 }
 async function sendCmd(str) {
   if (!BT.tx) return;
-  const data = new TextEncoder().encode(str + '\n');
+  // "hex:aa 01 02" 처럼 쓰면 바이트 그대로 전송, 아니면 글자 + 줄바꿈
+  const data = /^hex:/i.test(str)
+    ? new Uint8Array(str.slice(4).trim().split(/[\s,]+/).filter(Boolean).map(h => parseInt(h, 16)))
+    : new TextEncoder().encode(str + '\n');
   try {
     for (let i = 0; i < data.length; i += 20) {      // BLE 기본 MTU 20바이트 단위로 나눠 전송
       const chunk = data.slice(i, i + 20);
-      if (BT.tx.writeValueWithoutResponse) await BT.tx.writeValueWithoutResponse(chunk);
+      if (BT.tx.properties.writeWithoutResponse && BT.tx.writeValueWithoutResponse) await BT.tx.writeValueWithoutResponse(chunk);
       else await BT.tx.writeValue(chunk);
     }
     log('→ ' + str, 'ok');
@@ -1027,6 +1086,14 @@ $('btnDemo').onclick = () => setDemo(!S.demo);
 $('btnSession').onclick = startSession;
 $('btnCalib').onclick = () => { if (S.phase !== 'train') startCalib(false); };
 $('btnExport').onclick = exportCsv;
+$('btnCopyLog').onclick = () => {
+  const text = logEl.innerText;
+  navigator.clipboard.writeText(text).then(() => log('로그를 복사했습니다. 카톡이나 Claude 대화창에 붙여넣으세요.', 'ok')).catch(() => {
+    const r = document.createRange(); r.selectNodeContents(logEl);
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    log('복사가 막혀 로그를 선택해 두었습니다. 길게 눌러 복사하세요.');
+  });
+};
 $('protocol').onchange = () => { markProtocolBands(); S.base = null; S.ewInit = false; log('프로토콜 변경: ' + PROTOCOLS[$('protocol').value].name + ' · 기준선을 다시 측정하면 정확해집니다.'); };
 $('threshold').oninput = e => { S.threshold = +e.target.value; $('thVal').textContent = e.target.value; $('thMode').value = 'manual'; };
 $('profile').onchange = e => { $('customRow').hidden = e.target.value !== 'custom'; };
