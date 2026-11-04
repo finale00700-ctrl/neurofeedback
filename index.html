@@ -406,7 +406,9 @@ function computeBandsFromRaw() {
   let mean = 0;
   for (let i = 0; i < N; i++) mean += ring[i];
   mean /= N;
-  for (let i = 0; i < N; i++) re[i] = (ring[(ringIdx + i) % N] - mean) * win[i];
+  let sq = 0;
+  for (let i = 0; i < N; i++) { const d = ring[(ringIdx + i) % N] - mean; sq += d * d; re[i] = d * win[i]; }
+  S.rawStd = Math.sqrt(sq / N) / scaleVal();   // 기기 원래 단위의 신호 크기
   fft(re, im);
   const out = { delta:0, theta:0, alpha:0, smr:0, beta:0, gamma:0 };
   const df = FS / N;
@@ -729,8 +731,12 @@ function tick() {
     const sorted = [...S.totals].sort((a, c) => a - c), med = sorted[sorted.length >> 1];
     S.artifact = S.totals.length > 8 && total > med * 5;
     if (S.quality != null && S.quality > 50) S.artifact = true;
-    S.poorContact = !S.demo && S.lineRatio > 100;
-    if (S.poorContact) S.artifact = true;
+    // 전원 잡음 비율: 100 넘으면 '접촉 약함' 안내만, 3000 넘으면 미착용으로 보고 점수 계산 중지
+    // 뉴로하모니 기록 기준: 착용 시 신호 크기 3천~2만, 미착용 시 5만~60만
+    const px = $('profile').value === 'panaxtos';
+    S.poorContact = !S.demo && (S.lineRatio > 100 || (px && S.rawStd > 20000));
+    S.noContact = !S.demo && (S.lineRatio > 3000 || (px && S.rawStd > 40000));
+    if (S.noContact) S.artifact = true;
 
     if (!S.artifact) {
       const m = Math.log(PROTOCOLS[$('protocol').value].f(b) + 1e-9);
@@ -991,7 +997,7 @@ function renderPanel(silent) {
   });
   const q = S.quality;
   $('qualityText').textContent = silent ? '신호 품질: 데이터가 들어오지 않습니다' :
-    `신호 품질: ${S.poorContact ? '전극 접촉 불량 · 이마에 밀착시키고 머리카락을 걷어 주세요' : q == null ? (S.artifact ? '잡음 감지' : '양호') :(q === 0 ? '좋음 (0)' : q < 50 ? `보통 (${q})` : `나쁨 (${q}) · 전극 접촉을 확인하세요`)}`
+    `신호 품질: ${S.noContact ? `전극이 닿지 않음 (잡음 ${Math.round(S.lineRatio)} · 크기 ${Math.round((S.rawStd || 0) / 1000)}k) · 머리띠를 이마에 밀착해 주세요` : S.poorContact ? `접촉 약함 (잡음 ${Math.round(S.lineRatio)} · 크기 ${Math.round((S.rawStd || 0) / 1000)}k) · 점수는 계속 계산합니다` : q == null ? (S.artifact ? '잡음 감지' : (S.demo ? '양호' : `양호 (잡음 ${Math.round(S.lineRatio)} · 크기 ${Math.round((S.rawStd || 0) / 1000)}k)`)) :(q === 0 ? '좋음 (0)' : q < 50 ? `보통 (${q})` : `나쁨 (${q}) · 전극 접촉을 확인하세요`)}`
     + (S.attention != null ? ` · 집중도 ${S.attention}` : '') + (S.meditation != null ? ` · 명상도 ${S.meditation}` : '')
     + (S.hasSmr ? '' : ' · SMR은 베타로 추정')
     + (S.devStat != null && !S.demo ? ` · 기기 배터리(추정) ${S.devStat}%` : '')
@@ -1001,7 +1007,7 @@ function renderPanel(silent) {
   $('scoreSub').textContent = `목표선 ${Math.round(S.threshold)} · ${PROTOCOLS[$('protocol').value].name}`;
   const st = $('stateText');
   st.className = 'state' + (S.reward ? ' reward' : S.artifact ? ' art' : '');
-  st.textContent = silent ? '신호 대기' : S.poorContact ? '전극 접촉 확인' : S.artifact ? '움직임·눈 깜빡임 잡음' : S.phase === 'calib' ? '기준선 측정 중' : S.reward ? '보상 중 · 그대로 유지하세요' : '목표선 아래';
+  st.textContent = silent ? '신호 대기' : S.noContact ? '전극 접촉 확인' : S.artifact ? '움직임·눈 깜빡임 잡음' : S.phase === 'calib' ? '기준선 측정 중' : S.reward ? '보상 중 · 그대로 유지하세요' : '목표선 아래';
 
   const el = (performance.now() - S.phaseStart) / 1000;
   $('phaseText').textContent = { preview:'실시간 미리보기', calib:`기준선 측정 ${Math.max(0, 30 - el).toFixed(0)}초 남음`, train:'훈련 중', done:'세션 완료' }[S.phase];
