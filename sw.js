@@ -1,5 +1,5 @@
 /* 브레인업 뉴로피드백 — 오프라인 실행용 서비스 워커 */
-const VERSION = 'brainup-nf-v3';
+const VERSION = 'brainup-nf-v4';
 const CORE = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
 
 self.addEventListener('install', e => {
