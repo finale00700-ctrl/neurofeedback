@@ -164,6 +164,11 @@ code{font-family:var(--mono);font-size:12px;background:var(--ink);border:1px sol
 .rp-hist th{color:var(--paper-muted);font-weight:500}
 .rp-hist tr.now td{font-weight:600}
 .rp-note{font-size:11.5px;color:var(--paper-muted);margin:6px 0 0;line-height:1.6}
+.sheet, .sheet *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.roster{border:1px solid var(--line);border-radius:10px;padding:8px 12px}
+.roster summary{cursor:pointer;font-size:13px;color:var(--muted)}
+.roster[open]{display:flex;flex-direction:column;gap:8px}
+.roster textarea{background:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%;color:var(--fg);font:inherit;resize:vertical}
 @media print{
   @page{size:A4;margin:12mm}
   html,body{background:#fff!important}
@@ -247,9 +252,21 @@ code{font-family:var(--mono);font-size:12px;background:var(--ink);border:1px sol
             </select>
           </label>
         </div>
-        <label class="f">참가자 (이름 또는 번호)
-          <input type="text" id="participant" placeholder="예: 햇살요양원-03" autocomplete="off">
-        </label>
+        <div class="row" style="align-items:flex-end">
+          <label class="f">참가자 (이름 또는 번호)
+            <input type="text" id="participant" list="rosterList" placeholder="예: 햇살요양원-03" autocomplete="off">
+          </label>
+          <button id="btnNext" class="btn">다음 사람 ▶</button>
+        </div>
+        <datalist id="rosterList"></datalist>
+        <details class="roster" id="rosterBox">
+          <summary>단체 수업 명단 (<span id="rosterCount">0</span>명)</summary>
+          <textarea id="roster" rows="5" placeholder="한 줄에 한 명씩 적어 두세요&#10;햇살요양원-01&#10;햇살요양원-02"></textarea>
+          <div class="row">
+            <button id="btnDaily" class="btn">오늘 결과 모아 보기</button>
+            <span class="hint">명단 순서대로 「다음 사람」이 이름을 채웁니다.</span>
+          </div>
+        </details>
         <div class="row">
           <button id="btnSession" class="btn gold">세션 시작 (기준선 30초 → 훈련)</button>
           <button id="btnCalib" class="btn">기준선만 다시</button>
@@ -301,6 +318,24 @@ code{font-family:var(--mono);font-size:12px;background:var(--ink);border:1px sol
     </aside>
   </main>
 
+  <div id="daily" class="report" hidden role="dialog" aria-label="단체 수업 결과">
+    <div class="sheet">
+      <div class="rp-head">
+        <div class="rp-title">
+          <small>브레인업뮤즈연구소 · 뉴로피드백 단체 수업 결과</small>
+          <h2 id="dyTitle">오늘 결과</h2>
+          <p id="dyMeta"></p>
+        </div>
+        <div class="row no-print">
+          <button id="btnDailyPdf" class="btn gold">PDF로 저장</button>
+          <button id="btnDailyClose" class="btn">닫기</button>
+        </div>
+      </div>
+      <div id="dyTable" class="rp-hist"></div>
+      <p class="rp-note">점수는 각자 회기 시작 때 잰 30초 기준선과 비교한 상대 점수입니다(기준선과 같으면 50). 사람끼리 비교하는 점수가 아니라, 같은 사람의 회기별 변화를 보기 위한 훈련 피드백이며 의학적 검사나 진단 결과가 아닙니다.</p>
+    </div>
+  </div>
+
   <div id="report" class="report" hidden role="dialog" aria-label="세션 결과지">
     <div class="sheet">
       <div class="rp-head">
@@ -311,6 +346,7 @@ code{font-family:var(--mono);font-size:12px;background:var(--ink);border:1px sol
         </div>
         <div class="row no-print">
           <button id="btnPdf" class="btn gold">PDF로 저장</button>
+          <button id="btnNext2" class="btn">다음 사람 ▶</button>
           <button id="btnCloseReport" class="btn">닫기</button>
         </div>
       </div>
@@ -832,7 +868,7 @@ function tick() {
       const ref = S.base || { mean:S.ewMean, sd:Math.sqrt(S.ewVar) };
       const z = (m - ref.mean) / Math.max(ref.sd, 0.05);
       S.rawScore = clamp(50 + 18 * z, 0, 100);
-      S.score = lerp(S.score, S.rawScore, 0.3);
+      S.score = lerp(S.score, S.rawScore, 0.1);   // 약 2.5초에 걸쳐 부드럽게 따라감 (출렁임 감소)
     }
   }
 
@@ -1000,6 +1036,45 @@ function drawReportChart(sm) {
   g.strokeStyle = '#2f7f74'; g.lineWidth = 1.8; g.beginPath();
   sm.series.forEach((p, i) => i ? g.lineTo(X(i), Y(p.s)) : g.moveTo(X(i), Y(p.s))); g.stroke();
 }
+
+/* ───────── 8-2. 단체 수업: 명단 · 다음 사람 · 오늘 결과 ───────── */
+const rosterNames = () => $('roster').value.split(/\n/).map(x => x.trim()).filter(Boolean);
+function refreshRoster() {
+  const names = rosterNames();
+  $('rosterCount').textContent = names.length;
+  $('rosterList').innerHTML = names.map(n => `<option value="${esc(n)}"></option>`).join('');
+}
+function nextPerson() {
+  if (S.phase === 'calib' || S.phase === 'train') { log('세션이 진행 중입니다. 「세션 끝내기」 후에 다음 사람으로 넘어가세요.', 'er'); return; }
+  const names = rosterNames(), cur = $('participant').value.trim();
+  if (!names.length) { $('rosterBox').open = true; log('단체 수업 명단에 이름을 한 줄에 한 명씩 적어 주세요.', 'er'); return; }
+  const i = names.indexOf(cur);
+  const nx = names[(i + 1) % names.length];
+  $('participant').value = nx; saveSettings();
+  $('report').hidden = true;
+  S.stat = null; S.lastSummary = null; S.phase = 'preview';
+  ['stRate', 'stAvg', 'stCount', 'stLong'].forEach(id => { $(id).textContent = '–'; });
+  log(`다음 차례: ${nx}. 전극을 닦고 머리띠를 씌운 뒤, 잡음이 내려오면 「세션 시작」을 누르세요.`, 'ok');
+}
+function showDaily() {
+  const today = new Date().toDateString();
+  const rows = loadHistory().filter(h => new Date(h.id).toDateString() === today);
+  const d = new Date();
+  $('dyTitle').textContent = `${d.getFullYear()}. ${String(d.getMonth() + 1).padStart(2, '0')}. ${String(d.getDate()).padStart(2, '0')}. 수업 결과`;
+  const people = new Set(rows.map(r => r.who));
+  $('dyMeta').textContent = rows.length ? `참가 ${people.size}명 · 세션 ${rows.length}회` : '';
+  $('dyTable').innerHTML = rows.length
+    ? `<table><thead><tr><th>순서</th><th>시각</th><th>참가자</th><th>프로토콜</th><th>훈련</th><th>평균 점수</th><th>보상 비율</th><th>최장 유지</th></tr></thead><tbody>${rows.map((h, i) => `<tr><td>${i + 1}</td><td>${new Date(h.id).toTimeString().slice(0, 5)}</td><td>${esc(h.who)}</td><td>${esc(h.protoName)}</td><td>${Math.floor(h.dur / 60)}분 ${h.dur % 60}초</td><td>${h.avg}</td><td>${h.rate}%</td><td>${h.longest}초</td></tr>`).join('')}</tbody></table>`
+    : '<p class="rp-note" style="margin:0">오늘 끝까지 진행한 세션이 아직 없습니다.</p>';
+  $('daily').hidden = false;
+}
+function printAs(title) {
+  const old = document.title;
+  document.title = title;
+  try { window.print(); } catch { log('이 화면에서는 인쇄(PDF 저장)를 열 수 없습니다. 설치한 앱이나 Chrome에서 열어 주세요.', 'er'); }
+  setTimeout(() => { document.title = old; }, 1500);
+}
+
 function savePdf() {
   const sm = S.lastSummary;
   const old = document.title;
@@ -1337,6 +1412,12 @@ $('btnSession').onclick = startSession;
 $('btnCalib').onclick = () => { if (S.phase !== 'train') startCalib(false); };
 $('btnExport').onclick = exportCsv;
 $('btnPdf').onclick = savePdf;
+$('btnNext').onclick = nextPerson;
+$('btnNext2').onclick = nextPerson;
+$('btnDaily').onclick = showDaily;
+$('btnDailyClose').onclick = () => { $('daily').hidden = true; };
+$('btnDailyPdf').onclick = () => { const d = new Date(); printAs(`단체수업결과_${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`); };
+$('roster').addEventListener('input', refreshRoster);
 $('btnCloseReport').onclick = () => { $('report').hidden = true; };
 $('btnResult').onclick = () => {
   if (S.lastSummary) { showReport(S.lastSummary); return; }
@@ -1363,7 +1444,7 @@ $('volume').oninput = e => Audio_.setVolume(e.target.value / 100);
 $('btnSound').onclick = async () => { const on = await Audio_.toggle(); $('btnSound').textContent = on ? '소리 끄기' : '소리 켜기'; };
 
 /* ───────── 13. 앱 기능: 설정 저장 · 화면 꺼짐 방지 · 전체화면 · 설치 · 오프라인 ───────── */
-const SAVE_IDS = ['participant', 'protocol', 'duration', 'thMode', 'threshold', 'musicMode', 'volume', 'profile', 'format', 'cSvc', 'cRx', 'cTx', 'fs', 'scale', 'startCmd', 'breathOn'];
+const SAVE_IDS = ['roster', 'participant', 'protocol', 'duration', 'thMode', 'threshold', 'musicMode', 'volume', 'profile', 'format', 'cSvc', 'cRx', 'cTx', 'fs', 'scale', 'startCmd', 'breathOn'];
 const STORE_KEY = 'brainup-nf-settings';
 try {
   const saved = JSON.parse(localStorage.getItem(STORE_KEY) || '{}');
@@ -1428,6 +1509,7 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 // 점검용: 저장해 둔 기기 패킷을 넣어 해독기를 시험할 때 사용
 window.__nf = { onPanaxtos, setFs, state:S };
 
+refreshRoster();
 setDemo(false);   // 앱을 열면 데모는 꺼진 상태로 시작 (수업 중 착각 방지)
 setInterval(tick, TICK);
 log('“블루투스 기기 연결”로 머리띠를 연결하세요. 연습만 하려면 “데모 켜기”를 누르세요.', 'ok');
