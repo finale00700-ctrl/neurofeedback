@@ -732,10 +732,9 @@ function tick() {
     S.artifact = S.totals.length > 8 && total > med * 5;
     if (S.quality != null && S.quality > 50) S.artifact = true;
     // 전원 잡음 비율: 100 넘으면 '접촉 약함' 안내만, 3000 넘으면 미착용으로 보고 점수 계산 중지
-    // 뉴로하모니 기록 기준: 착용 시 신호 크기 3천~2만, 미착용 시 5만~60만
-    const px = $('profile').value === 'panaxtos';
-    S.poorContact = !S.demo && (S.lineRatio > 100 || (px && S.rawStd > 20000));
-    S.noContact = !S.demo && (S.lineRatio > 3000 || (px && S.rawStd > 40000));
+    // 60Hz 잡음 비율 기준 (뉴로하모니 실측: 착용 직후 수백, 미착용 수만)
+    S.poorContact = !S.demo && S.lineRatio > 300;
+    S.noContact = !S.demo && S.lineRatio > 5000;
     if (S.noContact) S.artifact = true;
 
     if (!S.artifact) {
@@ -997,13 +996,13 @@ function renderPanel(silent) {
   });
   const q = S.quality;
   $('qualityText').textContent = silent ? '신호 품질: 데이터가 들어오지 않습니다' :
-    `신호 품질: ${S.noContact ? `전극이 닿지 않음 (잡음 ${Math.round(S.lineRatio)} · 크기 ${Math.round((S.rawStd || 0) / 1000)}k) · 머리띠를 이마에 밀착해 주세요` : S.poorContact ? `접촉 약함 (잡음 ${Math.round(S.lineRatio)} · 크기 ${Math.round((S.rawStd || 0) / 1000)}k) · 점수는 계속 계산합니다` : q == null ? (S.artifact ? '잡음 감지' : (S.demo ? '양호' : `양호 (잡음 ${Math.round(S.lineRatio)} · 크기 ${Math.round((S.rawStd || 0) / 1000)}k)`)) :(q === 0 ? '좋음 (0)' : q < 50 ? `보통 (${q})` : `나쁨 (${q}) · 전극 접촉을 확인하세요`)}`
+    `신호 품질: ${S.noContact ? `전극이 닿지 않음 (잡음 ${Math.round(S.lineRatio)}) · 머리띠를 이마에 밀착하고 귀 클립을 끼워 주세요` : S.poorContact ? `접촉 약함 (잡음 ${Math.round(S.lineRatio)}) · 점수는 계속 계산합니다` : q == null ? (S.artifact ? '잡음 감지' : (S.demo ? '양호' : `양호 (잡음 ${Math.round(S.lineRatio)})`)) :(q === 0 ? '좋음 (0)' : q < 50 ? `보통 (${q})` : `나쁨 (${q}) · 전극 접촉을 확인하세요`)}`
     + (S.attention != null ? ` · 집중도 ${S.attention}` : '') + (S.meditation != null ? ` · 명상도 ${S.meditation}` : '')
     + (S.hasSmr ? '' : ' · SMR은 베타로 추정')
     + (S.devStat != null && !S.demo ? ` · 기기 배터리(추정) ${S.devStat}%` : '')
     + (PX.lost > 0 && !S.demo ? ` · 빠진 패킷 ${PX.lost}` : '');
 
-  $('scoreNum').textContent = silent ? '--' : Math.round(S.score);
+  $('scoreNum').textContent = silent || S.noContact ? '--' : Math.round(S.score);
   $('scoreSub').textContent = `목표선 ${Math.round(S.threshold)} · ${PROTOCOLS[$('protocol').value].name}`;
   const st = $('stateText');
   st.className = 'state' + (S.reward ? ' reward' : S.artifact ? ' art' : '');
